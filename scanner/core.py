@@ -1,5 +1,3 @@
-
-
 import time
 import requests
 import re, urllib.parse as up
@@ -311,5 +309,5 @@ class Orchestrator:
 
             ssl_loader.stop(f"SSL/TLS check completed - Found {len(ssl_findings)} issues")
         else:
-            print("ℹ️  Skipping SSL/TLS checks for non-HTTPS URL")    
+            print("ℹ️  Skipping SSL/TLS checks for non-HTTPS URL")
         return findings
