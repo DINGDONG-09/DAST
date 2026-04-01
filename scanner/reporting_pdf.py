@@ -257,8 +257,8 @@ def to_pdf(findings: list, generated_at: str, pdf_path: str, title="Security Ass
         risk_level = "HIGH" if by_severity.get('high', 0) > 0 else (
             "MEDIUM" if by_severity.get('medium', 0) > 0 else "LOW")
         summary_text = f"""
-        This automated security assessment identified {total} potential vulnerabilities across the target application. 
-        The overall risk level is assessed as <b>{risk_level}</b>. 
+        This automated security assessment identified {total} potential vulnerabilities across the target application.
+        The overall risk level is assessed as <b>{risk_level}</b>.
         Priority should be given to addressing high-severity issues first, followed by medium and low-severity findings.
         """
     else:
@@ -302,15 +302,30 @@ def to_pdf(findings: list, generated_at: str, pdf_path: str, title="Security Ass
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
                 ]))
 
+                # Format CWE IDs
+                cwe_text = ", ".join(it.get("cwe_ids", [])[:2]) if it.get("cwe_ids") else "-"
+
+                # Format References as clickable links
+                refs = it.get("references", [])
+                ref_links = []
+                for ref in refs[:2]:
+                    ref_url = ref.get("url", "")
+                    if ref_url:
+                        ref_links.append(f'<a href="{ref_url}">{ref_url}</a>')
+                ref_text = ", ".join(ref_links) if ref_links else "-"
+
                 rows = [
                     ["URL", Paragraph(sanitize_html_for_pdf(it.get("url")), styles["Body"])],
                     ["Param", Paragraph(sanitize_html_for_pdf(it.get("param")), styles["Body"])],
                     ["Payload", Paragraph(sanitize_html_for_pdf(it.get("payload")), styles["Body"])],
                     ["Evidence", Paragraph(sanitize_html_for_pdf(it.get("evidence")), styles["Body"])],
+                    ["CWE ID", Paragraph(sanitize_html_for_pdf(cwe_text), styles["Body"])],
+                    ["References", Paragraph(ref_text, styles["Body"])],
                     ["Recommendation",
                      Paragraph(sanitize_html_for_pdf(it.get("recommendation")) or "Follow OWASP best practices.",
                                styles["Body"])],
                 ]
+
                 card = _card_table(rows)
                 story.append(KeepTogether([pills_tbl, Spacer(1, 2 * mm), card, Spacer(1, 6 * mm)]))
 
