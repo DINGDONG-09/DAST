@@ -8,7 +8,7 @@ from scanner.ai_analyzer import GeminiAnalyzer
 from datetime import datetime
 
 # Gemini API Key - Add your key here
-GEMINI_API_KEY = "AIzaSyBv2hOGGL9EyuQewzq2jWuTlG3epwyPL04"
+GEMINI_API_KEY = ""
 
 def parse_args():
     p = argparse.ArgumentParser(description="Mini-OWASP Web Scanner")
