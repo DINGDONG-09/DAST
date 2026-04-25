@@ -1,6 +1,8 @@
 import re
 import urllib.parse
 import time
+from difflib import SequenceMatcher
+
 
 def sqli_payloads(base_payloads=None):
     """
@@ -21,7 +23,6 @@ def sqli_payloads(base_payloads=None):
 
     out = list(base_payloads)
 
-    
     blind_payloads = [
         "' AND '1'='1",
         "' AND '1'='2",
@@ -32,7 +33,6 @@ def sqli_payloads(base_payloads=None):
     ]
     out.extend(blind_payloads)
 
-   
     time_payloads = [
         "' OR SLEEP(2)--",
         "\" OR SLEEP(2)--",
@@ -40,7 +40,6 @@ def sqli_payloads(base_payloads=None):
     ]
     out.extend(time_payloads)
 
-    
     seen = set()
     res = []
     for p in out:
@@ -93,6 +92,7 @@ class SQLiCheck:
         """Test a specific GET parameter for SQLi."""
         findings = []
 
+        # First, try error-based and time-based detection
         for payload in cls.SQLI_PAYLOADS:
             try:
                 parsed = urllib.parse.urlparse(url)
@@ -114,19 +114,24 @@ class SQLiCheck:
                     findings.append({
                         "type": "SQL Injection (GET)",
                         "severity": "CRITICAL",
+                        "severity_score": 9,
                         "url": test_url,
                         "parameter": param_name,
                         "payload": payload,
                         "evidence": cls._extract_evidence(response.text),
                         "description": f"SQL Injection vulnerability found in parameter '{param_name}'. "
-                                     f"The application directly includes user input in SQL queries.",
+                                       f"The application directly includes user input in SQL queries.",
                         "recommendation": "Use parameterized queries (prepared statements), input validation, "
-                                       "and proper escaping to prevent SQL injection."
+                                          "and proper escaping to prevent SQL injection."
                     })
                     break
 
             except Exception:
                 continue
+
+        # If error-based detection failed, try boolean-blind detection
+        if not findings:
+            findings.extend(cls._test_boolean_blind_get(http, url, param_name))
 
         return findings
 
@@ -158,22 +163,202 @@ class SQLiCheck:
                         findings.append({
                             "type": "SQL Injection (POST)",
                             "severity": "CRITICAL",
+                            "severity_score": 9,
                             "url": form["action"],
                             "form_page": form["page"],
                             "parameter": param_name,
                             "payload": payload,
                             "evidence": cls._extract_evidence(response.text),
                             "description": f"SQL Injection vulnerability found in form parameter '{param_name}'. "
-                                         f"The application directly includes user input in SQL queries.",
+                                           f"The application directly includes user input in SQL queries.",
                             "recommendation": "Use parameterized queries (prepared statements), input validation, "
-                                           "and proper escaping to prevent SQL injection."
+                                              "and proper escaping to prevent SQL injection."
                         })
                         break
 
                 except Exception:
                     continue
 
+            # If error-based detection failed, try boolean-blind detection for POST
+            if not findings:
+                findings.extend(cls._test_boolean_blind_post(http, form, param_name))
+
         return findings
+
+    @classmethod
+    def _test_boolean_blind_get(cls, http, url, param_name):
+        """Test GET parameter for boolean-based blind SQLi by comparing responses."""
+        findings = []
+
+        try:
+            # Get baseline response with SAFE value first
+            parsed = urllib.parse.urlparse(url)
+            query_params = urllib.parse.parse_qs(parsed.query)
+
+            # Use original parameter value as baseline (safe value)
+            baseline_value = query_params.get(param_name, ['1'])[0] if param_name in query_params else '1'
+            query_params[param_name] = [baseline_value]
+            baseline_query = urllib.parse.urlencode(query_params, doseq=True)
+            baseline_url = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, baseline_query, parsed.fragment
+            ))
+
+            baseline_response = http.get(baseline_url)
+            baseline_text = baseline_response.text if baseline_response else ""
+            baseline_status = baseline_response.status_code if baseline_response else 0
+            baseline_len = len(baseline_text)
+
+            if baseline_len == 0:
+                return findings
+
+            # Test with TRUE condition: ' AND '1'='1
+            true_payload = "' AND '1'='1"
+            query_params[param_name] = [true_payload]
+            new_query = urllib.parse.urlencode(query_params, doseq=True)
+            true_url = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, new_query, parsed.fragment
+            ))
+            true_response = http.get(true_url)
+            true_text = true_response.text if true_response else ""
+            true_status = true_response.status_code if true_response else 0
+            true_len = len(true_text)
+
+            # Test with FALSE condition: ' AND '1'='2
+            false_payload = "' AND '1'='2"
+            query_params[param_name] = [false_payload]
+            new_query = urllib.parse.urlencode(query_params, doseq=True)
+            false_url = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path,
+                parsed.params, new_query, parsed.fragment
+            ))
+            false_response = http.get(false_url)
+            false_text = false_response.text if false_response else ""
+            false_status = false_response.status_code if false_response else 0
+            false_len = len(false_text)
+
+            # Compare responses - now includes status code check
+            if cls._compare_responses(true_text, false_text, true_status, false_status):
+                findings.append({
+                    "type": "SQL Injection (GET - Boolean Blind)",
+                    "severity": "CRITICAL",
+                    "severity_score": 9,
+                    "url": true_url,
+                    "parameter": param_name,
+                    "payload": true_payload,
+                    "evidence": f"Boolean-based blind SQLi detected: TRUE condition (status {true_status}, {true_len} bytes) vs FALSE condition (status {false_status}, {false_len} bytes)",
+                    "description": f"Boolean-based blind SQL Injection vulnerability found in parameter '{param_name}'. "
+                                   f"The application behaves differently based on SQL boolean conditions, revealing information.",
+                    "recommendation": "Use parameterized queries (prepared statements), input validation, "
+                                      "and proper escaping to prevent SQL injection."
+                })
+
+        except Exception:
+            pass
+
+        return findings
+
+    @classmethod
+    def _test_boolean_blind_post(cls, http, form, param_name):
+        """Test POST parameter for boolean-based blind SQLi by comparing responses."""
+        findings = []
+
+        try:
+            # Get baseline response
+            baseline_data = {}
+            baseline_value = None
+            for inp in form["inputs"]:
+                baseline_data[inp["name"]] = inp["value"]
+                if inp["name"] == param_name:
+                    baseline_value = inp["value"]
+
+            baseline_response = http.post(form["action"], data=baseline_data)
+            baseline_text = baseline_response.text if baseline_response else ""
+            baseline_status = baseline_response.status_code if baseline_response else 0
+            baseline_len = len(baseline_text)
+
+            if baseline_len == 0:
+                return findings
+
+            # Test with TRUE condition
+            true_data = {}
+            for inp in form["inputs"]:
+                if inp["name"] == param_name:
+                    true_data[inp["name"]] = "' AND '1'='1"
+                else:
+                    true_data[inp["name"]] = inp["value"]
+
+            true_response = http.post(form["action"], data=true_data)
+            true_text = true_response.text if true_response else ""
+            true_status = true_response.status_code if true_response else 0
+            true_len = len(true_text)
+
+            # Test with FALSE condition
+            false_data = {}
+            for inp in form["inputs"]:
+                if inp["name"] == param_name:
+                    false_data[inp["name"]] = "' AND '1'='2"
+                else:
+                    false_data[inp["name"]] = inp["value"]
+
+            false_response = http.post(form["action"], data=false_data)
+            false_text = false_response.text if false_response else ""
+            false_status = false_response.status_code if false_response else 0
+            false_len = len(false_text)
+
+            # Compare responses - now includes status code check
+            if cls._compare_responses(true_text, false_text, true_status, false_status):
+                findings.append({
+                    "type": "SQL Injection (POST - Boolean Blind)",
+                    "severity": "CRITICAL",
+                    "severity_score": 9,
+                    "url": form["action"],
+                    "form_page": form["page"],
+                    "parameter": param_name,
+                    "payload": "' AND '1'='1",
+                    "evidence": f"Boolean-based blind SQLi detected: TRUE condition (status {true_status}, {true_len} bytes) vs FALSE condition (status {false_status}, {false_len} bytes)",
+                    "description": f"Boolean-based blind SQL Injection vulnerability found in form parameter '{param_name}'. "
+                                   f"The application behaves differently based on SQL boolean conditions, revealing information.",
+                    "recommendation": "Use parameterized queries (prepared statements), input validation, "
+                                      "and proper escaping to prevent SQL injection."
+                })
+
+        except Exception:
+            pass
+
+        return findings
+
+    @classmethod
+    def _compare_responses(cls, response1, response2, status1=200, status2=200):
+        """
+        Compare two responses to detect if they are significantly different.
+        Uses multiple comparison methods for robustness.
+        Includes HTTP status code comparison.
+        """
+        if not response1 or not response2:
+            return False
+
+        # Method 0: Status code comparison (most reliable indicator)
+        if status1 != status2:
+            # Different status codes = likely vulnerable
+            return True
+
+        # Method 1: Length comparison (must differ by at least 5% or 100 bytes)
+        len1 = len(response1)
+        len2 = len(response2)
+        len_diff = abs(len1 - len2)
+        len_ratio = len_diff / max(len1, len2) if max(len1, len2) > 0 else 0
+
+        if len_diff > 100 or len_ratio > 0.05:
+            return True
+
+        # Method 2: Content similarity using SequenceMatcher (must differ by at least 15%)
+        similarity = SequenceMatcher(None, response1, response2).ratio()
+        if similarity < 0.85:
+            return True
+
+        return False
 
     @classmethod
     def _is_vulnerable(cls, response, elapsed=0):
@@ -185,8 +370,7 @@ class SQLiCheck:
             if pattern.search(response.text):
                 return True
 
-        
-        if elapsed > 1.5: 
+        if elapsed > 1.5:
             return True
 
         return False
@@ -210,3 +394,7 @@ class SQLiCheck:
                 return line.strip()[:200]
 
         return "Potential SQL Injection vulnerability detected"
+
+
+
+"""Extract relevant evidence from response."""
