@@ -394,3 +394,7 @@ class SQLiCheck:
                 return line.strip()[:200]
 
         return "Potential SQL Injection vulnerability detected"
+
+
+
+"""Extract relevant evidence from response."""

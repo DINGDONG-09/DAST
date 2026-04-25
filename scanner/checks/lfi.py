@@ -188,3 +188,4 @@ class LFICheck:
                 return line.strip()[:200]
 
         return "Potential file content detected in response"
+"Potential file content detected in response"

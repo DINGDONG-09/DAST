@@ -217,3 +217,4 @@ class XSSCheck:
                 return line.strip()[:200]
 
         return "Payload reflected in response"
+"""Check if payload was stored and can be retrieved."""
